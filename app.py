@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import socket
 import asyncio
 from dnslib import DNSRecord, QTYPE
+import dns.resolver
 
 app = FastAPI()
 
@@ -26,26 +27,45 @@ async def resolve(domain: str = Query(..., description="Domínio para resolver")
             content={"error": f"Não foi possível resolver '{domain}'"}
         )
 
-@app.post("/dns-query")
-async def dns_query(request: Request):
-    if request.headers.get("content-type") != "application/dns-message":
-        return Response(status_code=415, content="Unsupported Media Type")
-
-    dns_query = await request.body()
+@app.get("/dns-query")
+async def dns_query_json(
+    name: str = Query(...),
+    type: str = Query("A"),
+    request: Request = None
+):
+    # Verifica se o header Accept é DNS JSON (usado por curl/firefox/chrome)
+    if "application/dns-json" not in request.headers.get("accept", ""):
+        return Response(status_code=406, content="Not Acceptable")
 
     try:
-        query = DNSRecord.parse(dns_query)
-        qname = str(query.q.qname)
-        qtype = QTYPE[query.q.qtype]
+        # Faz a resolução usando dnspython
+        resolver = dns.resolver.Resolver()
+        qtype = type.upper()
+        answer = resolver.resolve(name, qtype)
 
-        ip = socket.gethostbyname(qname)
-
-        reply = query.reply()
-        reply.add_answer(*DNSRecord.question(qname).add_answer_a(ip))
-
-        return Response(content=reply.pack(), media_type="application/dns-message")
+        # Constrói a resposta no formato RFC 8484
+        result = {
+            "Status": 0,
+            "TC": False,
+            "RD": True,
+            "RA": True,
+            "AD": False,
+            "CD": False,
+            "Question": [{"name": name, "type": dns.rdatatype.from_text(qtype)}],
+            "Answer": [
+                {
+                    "name": name,
+                    "type": dns.rdatatype.from_text(qtype),
+                    "TTL": r.ttl,
+                    "data": r.to_text()
+                } for r in answer
+            ]
+        }
+        return JSONResponse(content=result)
+    except dns.resolver.NoAnswer:
+        return JSONResponse(content={"Status": 3, "Question": [{"name": name, "type": dns.rdatatype.from_text(type)}]})
     except Exception as e:
-        return Response(status_code=500, content=f"DNS resolution failed: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/")
 async def root():
