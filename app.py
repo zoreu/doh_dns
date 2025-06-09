@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 import socket
 import asyncio
+from dnslib import DNSRecord, QTYPE
 
 app = FastAPI()
 
